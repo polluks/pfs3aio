@@ -476,7 +476,7 @@ struct reftable
 };
 
 #define DATACACHELEN 32
-#define DATACACHEMASK 0x1f
+#define DATACACHEMASK (DATACACHELEN - 1)
 
 #define MarkDataDirty(i) (g->dc.ref[i].dirty = 1)
 
@@ -521,6 +521,8 @@ struct globaldata
 	ULONG firstblock;                   /* first and last block of partition    */
 	ULONG lastblock;
 	ULONG maxtransfermax;
+	UWORD infoblockshift;
+	UWORD dummy_1;
 	struct diskcache dc;                /* cache to make '196 byte mode' faster */
 
 	/* LRU stuff */
@@ -550,6 +552,7 @@ struct globaldata
 	ULONG protectkey;                   /* key to unprotect                     */
 										/* ~0 als protected wegens error		*/
 	UWORD timeout;                      /* DosToHandlerInterface timeout value  */
+	BOOL newvolumepending;              /* Pending NewValue(TRUE, g);           */
 	BOOL dirty;                         /* Global dirty flag                    */
 	BOOL timeron;                       /* change is being timed                */
 	BOOL postpone;                      /* repeat timer when finished           */
@@ -1017,6 +1020,7 @@ typedef struct lockentry
 #define FirstReserved   (g->currentvolume->rootblk->firstreserved)
 #define InPartition(blk)  ((blk)>=g->firstblock && (blk)<=g->lastblock)
 #define BLOCKSIZE (g->blocksize)
+#define BLOCKSIZEMASK (g->blocksize - 1)
 #define BLOCKSHIFT (g->blockshift)
 #define DIRECTSIZE (g->directsize)
 

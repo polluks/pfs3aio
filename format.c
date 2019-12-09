@@ -163,6 +163,7 @@ BOOL FDSFormat (DSTR diskname, LONG disktype, ULONG *error, globaldata *g)
   struct rootblock *rootblock;
   struct volumedata *volume;
   struct crootblockextension *rext;
+  ULONG err;
   ULONG i;
 
 	ENTER("FDSFormat");
@@ -172,8 +173,10 @@ BOOL FDSFormat (DSTR diskname, LONG disktype, ULONG *error, globaldata *g)
 #endif
 
 	/* remove error-induced soft protect */
-	if (g->softprotect < 0)
+	if (g->softprotect < 0) {
+		*error = ERROR_DISK_WRITE_PROTECTED;
 		return DOSFALSE;
+	}
 
 	if (g->softprotect && g->protectkey == ~0)
 		g->softprotect = g->protectkey = 0;
@@ -183,21 +186,37 @@ BOOL FDSFormat (DSTR diskname, LONG disktype, ULONG *error, globaldata *g)
 	ShowVersion (g);
 
 	/* issue 00118: disk cannot exceed MAX_DISK_SIZE */
-	if (g->geom->dg_TotalSectors > MAXDISKSIZE)
+	if (g->geom->dg_TotalSectors > MAXDISKSIZE) {
+		*error = ERROR_OBJECT_TOO_LARGE;
 		return DOSFALSE;
+	}
 
-	if (MakeBootBlock (g) != 0)
+	// Only 512, 1024, 2048 and 4096 block sizes are supported.
+	// Last two require new large partition mode.
+	if (g->geom->dg_SectorSize < 512 || g->geom->dg_SectorSize > 4096) { 
+		*error = ERROR_BAD_NUMBER;
 		return DOSFALSE;
+	}
+	
+	err = MakeBootBlock (g);
+	if (err != 0) {
+		*error = err;
+ 		return DOSFALSE;
+	}
 
-	if (!(rootblock = MakeRootBlock (diskname, g)))
+	if (!(rootblock = MakeRootBlock (diskname, g))) {
+		*error = ERROR_NO_FREE_STORE;
 		return DOSFALSE;
+	}
 
 	/*  make volumedata BEFORE rext ! (bug 00135) */
 	g->currentvolume = volume = MakeVolumeData (rootblock, g);
 
 	/* add extension */
-	if (!(rext = MakeFormatRBlkExtension (rootblock, g)))
+	if (!(rext = MakeFormatRBlkExtension (rootblock, g))) {
+		*error = ERROR_NO_FREE_STORE;
 		return DOSFALSE;			// rootblock extension could not be created
+	}
 
 	volume->rblkextension = rext;
 	rootblock->options |= MODE_EXTENSION;
@@ -289,6 +308,11 @@ static ULONG MakeBootBlock (globaldata *g)
 	if (!(bbl = AllocBufmem (2 * BLOCKSIZE, g)))
 		return ERROR_NO_FREE_STORE;
 
+#if ACCESS_DETECT
+	if (!detectaccessmode((UBYTE*)bbl, g))
+		return ERROR_OBJECT_TOO_LARGE;
+#endif
+
 	memset (bbl, 0, 2*BLOCKSIZE);
 	bbl->disktype = ID_PFS_DISK;
 	error = RawWrite ((UBYTE *)bbl, 2, BOOTBLOCK1, g);
@@ -348,8 +372,15 @@ static rootblock_t *MakeRootBlock (DSTR diskname, globaldata *g)
 		return NULL;
 	}
 
-	rbl->reserved_blksize = resblocksize;
+	// Use large disk modes if block size is larger than 1024
+	if (g->geom->dg_SectorSize > resblocksize) {
+		resblocksize = g->geom->dg_SectorSize;
+		rbl->disktype = ID_PFS2_DISK;
+		NormalErrorMsg(AFS_WARNING_EXPERIMENTAL_DISK, NULL, 1);
+	}
+
 	rescluster = resblocksize/g->geom->dg_SectorSize;
+	rbl->reserved_blksize = resblocksize;
 
 #if LARGE_FILE_SIZE
 	rbl->options |= MODE_LARGEFILE;

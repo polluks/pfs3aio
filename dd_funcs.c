@@ -925,11 +925,8 @@ static LONG dd_Relabel(struct DosPacket *pkt, globaldata * g)
 	// ARG1 = BSTR new disk name
 	// RES1 = BOOL Success/failure (DOSTRUE/DOSFALSE)
 
-	UBYTE newlabel[FNSIZE];
-	BOOL added;
-	struct volumedata *volume;
-	struct DeviceList *devlist;
-	listentry_t *fe;
+	UBYTE newlabel[FNSIZE], *newname;
+	UBYTE newnamelen;
 
 #if MULTIUSER
 	if (g->user->uid != muROOT_UID)
@@ -940,52 +937,34 @@ static LONG dd_Relabel(struct DosPacket *pkt, globaldata * g)
 #endif
 
 	BCPLtoCString(newlabel, (DSTR)BARG1(pkt));
-	volume = g->currentvolume;
 
-	if (!CheckVolume(volume, 1, (ULONG *)&pkt->dp_Res2, g))
+	if (!CheckVolume(g->currentvolume, 1, (ULONG *)&pkt->dp_Res2, g))
 		return DOSFALSE;
 
-	/* make new doslist entry COPY VAN DISKINSERTSEQUENCE */
-	devlist = (struct DeviceList *)MakeDosEntry(newlabel, DLT_VOLUME);
-	if (devlist)
-	{
+	newnamelen = strlen(newlabel) + 2;
+	newname = AllocMem(newnamelen, MEMF_CLEAR | MEMF_PUBLIC);
+	if (newname) {
 		/* change rootblock */
 		if (RenameDisk(newlabel, g))
 		{
-			/* free old devlist */
-//          LockDosList (LDF_VOLUMES|LDF_READ);
-			Forbid();
-			RemDosEntry((struct DosList *)volume->devlist);
-			FreeDosEntry((struct DosList *)volume->devlist);
-//          UnLockDosList (LDF_VOLUMES|LDF_READ);
-			Permit();
-
-			/* fill in new. Diskname NIET */
-			g->currentvolume->devlist = devlist;
-			devlist->dl_Task = g->msgport;
-			devlist->dl_VolumeDate.ds_Days = volume->rootblk->creationday;
-			devlist->dl_VolumeDate.ds_Minute = volume->rootblk->creationminute;
-			devlist->dl_VolumeDate.ds_Tick = volume->rootblk->creationtick;
-			devlist->dl_LockList = 0;    // disk still inserted
-			devlist->dl_DiskType = volume->rootblk->disktype;
-
-			/* toevoegen */
-			added = AddDosEntry((struct DosList *)devlist);
-			volume->devlist = (struct DeviceList *)devlist;
-
-			/* alle locks veranderen */
-			for (fe = HeadOf(&volume->fileentries); fe->next; fe = fe->next)
-				fe->lock.fl_Volume = MKBADDR(devlist);
+				// change volume name
+				struct DeviceList *devlist = g->currentvolume->devlist;
+				UBYTE *oldname = BADDR(devlist->dl_Name);
+				strcpy(newname + 1, newlabel);
+				newname[0] = newnamelen;
+				devlist->dl_Name = MKBADDR(newname);
+				FreeMem(oldname, oldname[0] + 2);
 		}
 		else
 		{
+			FreeMem(newname, newnamelen);
 			pkt->dp_Res2 = ERROR_INVALID_COMPONENT_NAME;
 			return DOSFALSE;
 		}
 	}
 	else
 	{
-		pkt->dp_Res2 = ERROR_NO_FREE_STORE;     // ??
+		pkt->dp_Res2 = ERROR_NO_FREE_STORE;
 		return DOSFALSE;
 	}
 
@@ -1064,6 +1043,12 @@ static LONG dd_Info(struct DosPacket *pkt, globaldata * g)
 			- g->rootblock->alwaysfree - 1;
 		info->id_NumBlocksUsed = info->id_NumBlocks - alloc_data.alloc_available;
 		info->id_BytesPerBlock = volume->bytesperblock;
+		// Return faked large block size to prevent WB disk free space calculation overflow
+		// (if >=16G, minimum block size is 1024, >=32G, 2048 and so on..)
+		info->id_NumBlocksUsed >>= g->infoblockshift;
+		info->id_NumBlocks >>= g->infoblockshift;
+		info->id_BytesPerBlock <<= g->infoblockshift;
+		
 #ifdef KSWRAPPER
 		// 1.x C:Info only understands DOS\0
 		info->id_DiskType = g->v37DOS ? ID_INTER_FFS_DISK : ID_DOS_DISK;
@@ -1168,8 +1153,7 @@ static LONG dd_SerializeDisk(struct DosPacket *pkt, globaldata * g)
 	if (pkt->dp_Res2)
 		goto inh_error;
 
-	g->request->iotd_Req.io_Command = CMD_UPDATE;
-	DoIO((struct IORequest *)g->request);
+	UpdateAndMotorOff(g);
 	FreeBufmem(rbl, g);
 	return DOSTRUE;
 
@@ -1496,22 +1480,99 @@ static LONG dd_ReadLink(struct DosPacket *pkt, globaldata * g)
 
 	lockentry_t *parentle;
 	union objectinfo linkfi, *parentfi;
-	char *fullname;
+	char *fullname, *prefixptr, oldchar;
 	ULONG *error = &pkt->dp_Res2;
+	LONG res;
 
 	GetFileInfoFromLock(pkt->dp_Arg1, 0, parentle, parentfi);
 
 	/* strip upto first : */
 	SkipColon(fullname, (char *)pkt->dp_Arg2);
 
-	if (!(FindObject(parentfi, fullname, &linkfi,
-					 (ULONG *)&pkt->dp_Res2, g)))
-	{
-		if (pkt->dp_Res2 != ERROR_IS_SOFT_LINK)
-			return DOSFALSE;
+	if (FindObject(parentfi, fullname, &linkfi, error, g))	{
+		if (!IsSoftLink(linkfi))
+		{
+			*error = ERROR_OBJECT_WRONG_TYPE;
+			return -1;
+		}
+		/*
+		 * The softlink is the last element of the path. Determine
+		 * if we have a prefix. We can have:
+		 *
+		 * 1. no prefix:
+		 * "softlink"
+		 *
+		 * 2. prefix:
+		 * "foo:softlink"
+		 * "bar:normal/dirs/softlink"
+		 * "normal/dirs/softlink"
+		 *
+		 * The prefix cut position is after the last '/' element,
+		 * if found, else the cut position is after the first ':'
+		 * element found, or no prefix was specified.
+		 */
+		prefixptr = rindex(fullname, '/');
+		if (prefixptr)
+			prefixptr++;
+		else if (fullname != (char *)pkt->dp_Arg2)
+			prefixptr = fullname;
 	}
-
-	return ReadSoftLink(&linkfi, (char *)pkt->dp_Arg3, pkt->dp_Arg4, (ULONG *)&pkt->dp_Res2, g);
+	else
+	{
+		if (*error != ERROR_IS_SOFT_LINK)
+			return -1;
+		/*
+		 * The softlink is part of the path, but not the last
+		 * element. Determine if we have a prefix.
+		 *
+		 * We can have g->unparsed point to:
+		 *
+		 * 1. no prefix:
+		 *  "softlink/unparsed/stuff"
+		 *           ^
+		 * 2. prefix:
+		 *  "foo:softlink/unparsed/stuff"
+		 *               ^
+		 *  "bar:normal/dirs/softlink/unparsed/stuff"
+		 *                           ^
+		 *  "normal/dirs/softlink/unparsed/stuff"
+		 *                       ^
+		 * To determine the prefix cut position, walk backwards
+		 * until '/ is found. If no '/' is met before we reach the
+		 * path beginning, check if ':' was present in the path. If
+		 * so that is the prefix.
+		 */
+		for (prefixptr = g->unparsed - 1;
+		     prefixptr > fullname;
+		     prefixptr--)
+		{
+			if (*prefixptr == '/')
+			{
+				prefixptr++;
+				break;
+			}
+		}
+		if (prefixptr == fullname) /* no '/' was found ? */
+		{
+			/* If the path includes a volume/device ("foo:"),
+			 * fullname is the prefix cut position, else no
+			 * prefix is specified.
+			 */
+			if (fullname == (char *)pkt->dp_Arg2)
+				prefixptr = 0;
+		}
+ 	}
+ 
+	/* Terminate to get the prefix, if any */
+	if (prefixptr)
+	{
+		oldchar = *prefixptr;
+		*prefixptr = '\0';
+	}
+	res = ReadSoftLink(&linkfi, prefixptr ? (char *)pkt->dp_Arg2 : "", (char *)pkt->dp_Arg3, pkt->dp_Arg4, error, g);
+	if (prefixptr)
+		*prefixptr = oldchar;
+	return res;
 }
 
 
@@ -1527,13 +1588,16 @@ static LONG dd_InhibitOn(struct DosPacket *pkt, globaldata * g)
 
 	if (pkt->dp_Arg1 != DOSFALSE)   /* don't check for DOSTRUE (Holger Kruse!) */
 	{
-		while (g->currentvolume)    /* inefficiënt.. */
-			DiskRemoveSequence(g);
+		if (!SafeDiskRemoveSequence(g)) {
+			pkt->dp_Res2 = ERROR_OBJECT_IN_USE;
+			return DOSFALSE;
+		}
 		g->inhibitcount++;
 		g->timeron = FALSE;
 		g->timeout = 0;
 		g->DoCommand = InhibitedCommands;
 		g->disktype = ID_BUSY;
+		g->newvolumepending = FALSE;
 	}
 
 	/* else ->already uninhibited */
@@ -1563,7 +1627,7 @@ static LONG dd_InhibitOff(struct DosPacket *pkt, globaldata * g)
 
 			g->DoCommand = NormalCommands;
 			g->timeron = FALSE;
-			NewVolume(TRUE, g);
+			g->newvolumepending = TRUE;
 		}
 	}
 
@@ -1592,9 +1656,10 @@ static LONG dd_Format(struct DosPacket *pkt, globaldata * g)
 	if (g->inhibitcount == 0)
 	{
 		g->dirty = FALSE;
-		while (g->currentvolume)
-			DiskRemoveSequence(g);  // should always succeed now
-
+		if (!SafeDiskRemoveSequence(g)) {
+			pkt->dp_Res2 = ERROR_OBJECT_IN_USE;
+			return DOSFALSE;
+		}
 	}
 
 	/* format disk */
@@ -1652,13 +1717,17 @@ static LONG dd_AddNotify (struct DosPacket *pkt, globaldata *g)
 			no->unparsed++;     /* make it a cstring!! */
 		}
 		else
+		{
+			FreeMemP (no->objectname, g);
+			FreeMemP (no, g);
 			return DOSFALSE;
+		}
 	}
 	else
 	{
 		/* try to locate object */
 		found = FindObject (&oi, no->objectname+1, &filefi, (ULONG *)&pkt->dp_Res2, g);
-		if (found)
+		if (found && (IsVolume(filefi) || (ULONG)filefi.file.direntry > 2))
 		{
 			no->anodenr = IsVolume(filefi) ? ANODE_ROOTDIR : filefi.file.direntry->anode;
 		}
@@ -1668,6 +1737,8 @@ static LONG dd_AddNotify (struct DosPacket *pkt, globaldata *g)
 	if (IsDelDir (oi))
 	{
 		pkt->dp_Res2 = ERROR_OBJECT_WRONG_TYPE;
+		FreeMemP (no->objectname, g);
+		FreeMemP (no, g);
 		return DOSFALSE;
 	}
 #endif

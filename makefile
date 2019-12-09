@@ -2,11 +2,11 @@
 NOWDATE := "\"$(shell date "+%-d.%-m.%Y")\""
 NOWTIME := "\"$(shell date "+%T")\""
 
-CC=m68k-amigaos-gcc
+CC=/opt/amiga/bin/m68k-amigaos-gcc
 
-LIBS=-nostdlib -lnix -lamiga -lgcc -lnix13 -lnix -s
+LIBS=-nostdlib -lamiga -lgcc -lnix13 -lnix -s
 
-CFLAGS=-Os -fbbb=+ -m68000 -noixemul -fomit-frame-pointer -nostartfiles -mregparm=3 -msmall-code \
+CFLAGS=-Os -fbbb=+ -m68000 -noixemul -fomit-frame-pointer -nostartfiles -mregparm=3 -msmall-code -s \
 	-DMIN_LIB_VERSION=33 -DKSWRAPPER=1 \
 	-DSCSIDIRECT=1 -DNSD=1 -DTD64=1 -DTRACKDISK=1 \
 	-DLARGE_FILE_SIZE=0 -DEXTRAPACKETS=1 -DSIZEFIELD -DDELDIR=1 \
@@ -26,6 +26,9 @@ startup.o: startup.s
 end.o: end.s
 	$(CC) $(CFLAGS) -I. -c -o $@ end.s
 
+rawdofmt.o: rawdofmt.s
+	$(CC) $(CFLAGS) -I. -c -o $@ rawdofmt.s
+
 debug.o: debug.c
 	$(CC) $(CFLAGS) -I. -c -o $@ debug.c
 
@@ -41,7 +44,7 @@ boot.o: boot.c
 directory.o: directory.c
 	$(CC) $(CFLAGS) -I. -c -o $@ directory.c
 
-dostohandlerinterface.o: dostohandlerinterface.c
+dostohandlerinterface.o: dostohandlerinterface.c dd_funcs.c
 	$(CC) $(CFLAGS) -I. -c -o $@ dostohandlerinterface.c
 
 disk.o: disk.c

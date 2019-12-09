@@ -208,8 +208,7 @@ extern BOOL debug;
 
 enum vctype {read, write};
 static int CheckDataCache(ULONG blocknr, globaldata *g);
-static int CachedRead(ULONG blocknr, ULONG *error, globaldata *g);
-static int FakeCachedRead(ULONG blocknr, ULONG *error, globaldata *g);
+static int CachedRead(ULONG blocknr, ULONG *error, BOOL fake, globaldata *g);
 static UBYTE *CachedReadD(ULONG blknr, ULONG *err, globaldata *g);
 static int CachedWrite(UBYTE *data, ULONG blocknr, globaldata *g);
 static void ValidateCache(ULONG blocknr, ULONG numblocks, enum vctype, globaldata *g);
@@ -512,7 +511,7 @@ static SFSIZE SeekInRollover(fileentry_t *file, SFSIZE offset, LONG mode, ULONG 
 
 	/* calculate new values */
 	anodeoffset = file->offset >> BLOCKSHIFT;
-	blockoffset = file->offset & (BLOCKSIZE-1);
+	blockoffset = file->offset & BLOCKSIZEMASK;
 	file->currnode = &file->anodechain->head;
 	CorrectAnodeAC(&file->currnode, &anodeoffset, g);
 	
@@ -640,7 +639,7 @@ static ULONG ReadFromFile(fileentry_t *file, UBYTE *buffer, ULONG size,
 	chnode = file->currnode;
 	t = blockoffset + size;
 	fullblks = t>>BLOCKSHIFT;       /* # full blocks */
-	bytesleft = t&(BLOCKSIZE-1);    /* # bytes in last incomplete block */
+	bytesleft = t&BLOCKSIZEMASK;    /* # bytes in last incomplete block */
 
 	/* check mask, both at start and end */
 	t = (((ULONG)(buffer-blockoffset+BLOCKSIZE))&~g->dosenvec->de_Mask) ||
@@ -728,7 +727,7 @@ static ULONG ReadFromFile(fileentry_t *file, UBYTE *buffer, ULONG size,
 	if (!*error)
 	{
 		file->anodeoffset += fullblks;
-		file->blockoffset = (file->blockoffset + size)&(BLOCKSIZE-1);   // not bytesleft!!
+		file->blockoffset = (file->blockoffset + size)&BLOCKSIZEMASK;   // not bytesleft!!
 		CorrectAnodeAC(&file->currnode, &file->anodeoffset, g);
 		file->offset += size;
 		return size;
@@ -785,7 +784,7 @@ static ULONG WriteToFile(fileentry_t *file, UBYTE *buffer, ULONG size,
 	chnode = file->currnode;
 	anodeoffset = file->anodeoffset;
 	blockoffset = file->blockoffset;
-	totalblocks = (blockoffset + size + BLOCKSIZE-1)>>BLOCKSHIFT;   /* total # changed blocks */
+	totalblocks = (blockoffset + size + BLOCKSIZEMASK)>>BLOCKSHIFT;   /* total # changed blocks */
 	if (!(bytestowrite = size))                                     /* # bytes to be done */
 		return 0;
 
@@ -799,8 +798,8 @@ static ULONG WriteToFile(fileentry_t *file, UBYTE *buffer, ULONG size,
 		return -1;
 	}
 
-	oldblocksinfile = (oldfilesize + BLOCKSIZE-1)>>BLOCKSHIFT;
-	newblocksinfile = (newfileoffset + BLOCKSIZE-1)>>BLOCKSHIFT;
+	oldblocksinfile = (oldfilesize + BLOCKSIZEMASK)>>BLOCKSHIFT;
+	newblocksinfile = (newfileoffset + BLOCKSIZEMASK)>>BLOCKSHIFT;
 	if (newblocksinfile > oldblocksinfile)
 	{
 		t = newblocksinfile - oldblocksinfile;
@@ -863,14 +862,14 @@ static ULONG WriteToFile(fileentry_t *file, UBYTE *buffer, ULONG size,
 
 			if (blockoffset) 
 			{
-				slotnr = CachedRead(chnode->an.blocknr + anodeoffset, error, g);
+				slotnr = CachedRead(chnode->an.blocknr + anodeoffset, error, FALSE, g);
 				if (*error)
 					goto wtf_error;
 			}
 			else
 			{
 				/* for one block no offset growing file */
-				slotnr = FakeCachedRead(chnode->an.blocknr + anodeoffset, error, g);
+				slotnr = CachedRead(chnode->an.blocknr + anodeoffset, error, TRUE, g);
 			}
 
 			/* copy data to cache and mark block as dirty */
@@ -891,19 +890,49 @@ static ULONG WriteToFile(fileentry_t *file, UBYTE *buffer, ULONG size,
 	if (newfileoffset > oldfilesize)
 	{
 		blockstofill = totalblocks;
-		bytestowrite = totalblocks<<BLOCKSHIFT;
 	}
 	else
+	{
 		blockstofill = bytestowrite>>BLOCKSHIFT;
+	}
 
 	while (blockstofill && !*error)
 	{
+		UBYTE *lastpart = NULL;
+		UBYTE *writeptr;
+
 		if (blockstofill + anodeoffset >= chnode->an.clustersize)
 			t = chnode->an.clustersize - anodeoffset;   /* t is # blocks to write now */
 		else
 			t = blockstofill;
+		
+		writeptr = dataptr;
+		// last write, writing to end of file and last block won't be completely filled?
+		// all this just to prevent out of bounds memory read access.
+		if (t == blockstofill && (bytestowrite & BLOCKSIZEMASK) && newfileoffset > oldfilesize)
+		{
+			// limit indirect to max 2 * DIRECTSIZE
+			if (t > 2 * DIRECTSIZE) {
+				// > 2 * DIRECTSIZE: write only last partial block indirectly
+				t--;
+			} else {
+				// indirect write last block(s), including final partial block.
+				if (!(lastpart = AllocBufmem(t<<BLOCKSHIFT, g)))
+				{
+					if (t == 1)
+					{
+						// no memory, do slower cached final partial block write
+						goto indirectlastwrite;
+					}
+					t /= 2;
+				} else {
+					memcpy(lastpart, dataptr, bytestowrite);
+					writeptr = lastpart;
+				}
+			}
+		}
 
-		*error = DiskWrite(dataptr, t, chnode->an.blocknr + anodeoffset, g);
+		*error = DiskWrite(writeptr, t, chnode->an.blocknr + anodeoffset, g);
 		if (!*error)
 		{
 			blockstofill  -= t;
@@ -912,14 +941,20 @@ static ULONG WriteToFile(fileentry_t *file, UBYTE *buffer, ULONG size,
 			anodeoffset   += t;
 			CorrectAnodeAC(&chnode, &anodeoffset, g);
 		}
+		
+		if (lastpart) {
+			bytestowrite = 0;
+			FreeBufmem(lastpart, g);
+		}
 	}   
 
-	/* write last block (RAW because cache direct) */
+indirectlastwrite:
+	/* write last block (RAW because cache direct), preserve block's old contents */
 	if (bytestowrite && !*error)
 	{
-	  UBYTE *lastblock;
+		UBYTE *lastblock;
 
-		slotnr = CachedRead(chnode->an.blocknr + anodeoffset, error, g);
+		slotnr = CachedRead(chnode->an.blocknr + anodeoffset, error, FALSE, g);
 		if (!*error)
 		{
 			lastblock = &g->dc.data[slotnr<<BLOCKSHIFT];
@@ -934,7 +969,7 @@ static ULONG WriteToFile(fileentry_t *file, UBYTE *buffer, ULONG size,
 	if (!*error)
 	{
 		file->anodeoffset += (blockoffset + size)>>BLOCKSHIFT; 
-		file->blockoffset  = (blockoffset + size)&(BLOCKSIZE-1);
+		file->blockoffset  = (blockoffset + size)&BLOCKSIZEMASK;
 		CorrectAnodeAC(&file->currnode, &file->anodeoffset, g);
 		file->offset      += size;
 		SetDEFileSize(file->le.info.file.direntry, max(oldfilesize, file->offset), g);
@@ -1028,7 +1063,7 @@ SFSIZE SeekInFile(fileentry_t *file, SFSIZE offset, LONG mode, ULONG *error, glo
 
 	/* calculate new values */
 	anodeoffset = newoffset >> BLOCKSHIFT;
-	blockoffset = newoffset & (BLOCKSIZE-1);
+	blockoffset = newoffset & BLOCKSIZEMASK;
 	file->currnode = &file->anodechain->head;
 	CorrectAnodeAC(&file->currnode, &anodeoffset, g);
 	/* DiskSeek(anode.blocknr + anodeoffset, g); */
@@ -1097,8 +1132,8 @@ SFSIZE ChangeFileSize(fileentry_t *file, SFSIZE releof, LONG mode, ULONG *error,
 
 	/* change allocation (ala WriteToFile) */
 	oldfilesize = GetDEFileSize(file->le.info.file.direntry, g);
-	oldblocksinfile = (GetDEFileSize(file->le.info.file.direntry, g) + BLOCKSIZE-1)>>BLOCKSHIFT;
-	newblocksinfile = (abseof+BLOCKSIZE-1)>>BLOCKSHIFT;
+	oldblocksinfile = (GetDEFileSize(file->le.info.file.direntry, g) + BLOCKSIZEMASK)>>BLOCKSHIFT;
+	newblocksinfile = (abseof+BLOCKSIZEMASK)>>BLOCKSHIFT;
 
 	if (newblocksinfile > oldblocksinfile)
 	{
@@ -1178,7 +1213,7 @@ static int CheckDataCache(ULONG blocknr, globaldata *g)
  * there already. return cache slotnr. errors are indicated by 'error'
  * (null = ok)
  */
-static int CachedRead(ULONG blocknr, ULONG *error, globaldata *g)
+static int CachedRead(ULONG blocknr, ULONG *error, BOOL fake, globaldata *g)
 {
 	int i;
 
@@ -1189,25 +1224,10 @@ static int CachedRead(ULONG blocknr, ULONG *error, globaldata *g)
 	if (g->dc.ref[i].dirty && g->dc.ref[i].blocknr)
 		UpdateSlot(i, g);
 
-	*error = RawRead(&g->dc.data[i<<BLOCKSHIFT], 1, blocknr, g);
-	g->dc.roving = (g->dc.roving+1)&g->dc.mask;
-	g->dc.ref[i].dirty = 0;
-	g->dc.ref[i].blocknr = blocknr;
-	return i;
-}
-
-static int FakeCachedRead(ULONG blocknr, ULONG *error, globaldata *g)
-{
-	int i;
-
-	*error = 0;
-	i = CheckDataCache(blocknr, g);
-	if (i != -1) return i;
-	i = g->dc.roving;
-	if (g->dc.ref[i].dirty && g->dc.ref[i].blocknr)
-		UpdateSlot(i, g);
-
-	memset(&g->dc.data[i<<BLOCKSHIFT], 0xAA, BLOCKSIZE);
+	if (fake)
+		memset(&g->dc.data[i<<BLOCKSHIFT], 0xAA, BLOCKSIZE);
+	else
+		*error = RawRead(&g->dc.data[i<<BLOCKSHIFT], 1, blocknr, g);
 	g->dc.roving = (g->dc.roving+1)&g->dc.mask;
 	g->dc.ref[i].dirty = 0;
 	g->dc.ref[i].blocknr = blocknr;
@@ -1218,7 +1238,7 @@ static UBYTE *CachedReadD(ULONG blknr, ULONG *err, globaldata *g)
 { 
 	int i;
 
-	i = CachedRead(blknr,err,g);
+	i = CachedRead(blknr, err, FALSE, g);
 	if (*err)   
 		return NULL;
 	else
@@ -1349,7 +1369,7 @@ ULONG DiskRead(UBYTE *buffer, ULONG blockstoread, ULONG blocknr, globaldata *g)
 
 	if (blockstoread == 1)
 	{
-		slotnr = CachedRead(blocknr, &error, g);
+		slotnr = CachedRead(blocknr, &error, FALSE, g);
 		memcpy(buffer, &g->dc.data[slotnr<<BLOCKSHIFT], BLOCKSIZE);
 		return error;
 	}
@@ -1423,7 +1443,7 @@ static BOOL DoSCSICommand(UBYTE *data, ULONG datalen, ULONG minlen, UBYTE *comma
 	g->request->iotd_Req.io_Length = sizeof(struct SCSICmd);
 	g->request->iotd_Req.io_Data = (APTR)&g->scsicmd;
 	g->request->iotd_Req.io_Command = HD_SCSICMD;
-	UBYTE err = DoIO((struct IORequest *)g->request);
+	BYTE err = DoIO((struct IORequest *)g->request);
 	if (err != 0) {
 		g->scsicmd.scsi_Status = 128 + err;
 		return FALSE;
@@ -1464,6 +1484,8 @@ static BOOL ErrorRequest(BOOL write, ULONG errnum, ULONG blocknr, ULONG blocks, 
 	args[2] = blocknr;
 	args[3] = blocks;
 	args[4] = (ULONG)scsierr;
+
+	UpdateAndMotorOff(g);
 
 	// Include Sense if Direct SCSI
 	if (g->tdmode == ACCESS_DS) {
@@ -1522,7 +1544,7 @@ retry:
 		*((ULONG *)&cmdbuf[2]) = blocknr;
 		*((ULONG *)&cmdbuf[6]) = transfer << 8;
 		PROFILE_OFF();
-		if (!DoSCSICommand(buffer, transfer << BLOCKSHIFT, transfer << BLOCKSHIFT, cmdbuf, 10, write ? SCSIF_WRITE : SCSIF_READ, g))
+		if (!DoSCSICommand(buffer, transfer << BLOCKSHIFT, 0, cmdbuf, 10, write ? SCSIF_WRITE : SCSIF_READ, g))
 		{
 			PROFILE_ON();
 			if (ErrorRequest(write, g->scsicmd.scsi_Status, blocknr, transfer, g))
@@ -1581,7 +1603,7 @@ retry:
 	while(io_length > 0)
 	{
 		io_transfer = min(io_length, min(g->maxtransfermax, g->dosenvec->de_MaxTransfer));
-		io_transfer &= ~(BLOCKSIZE-1);
+		io_transfer &= ~BLOCKSIZEMASK;
 		request = g->request;
 		request->iotd_Req.io_Command = write ? CMD_WRITE : CMD_READ;
 		request->iotd_Req.io_Length  = io_transfer;
@@ -1686,6 +1708,7 @@ ULONG RawWrite(UBYTE *buffer, ULONG blocks, ULONG blocknr, globaldata *g)
 static CONST UBYTE ACCESS_DEBUG1[] = "%s:%ld\nfirstblock=%ld\nlastblock=%ld\nblockshift=%ld\nblocksize=%ld\ninside4G=%ld";
 static CONST UBYTE ACCESS_DEBUG2[] = "Test %ld = %ld";
 static CONST UBYTE ACCESS_DEBUG3[] = "SCSI Read Capacity = %ld, Lastblock = %ld";
+static CONST UBYTE ACCESS_DEBUG_TD64_1[] = "TD64 empty access check: %ld";
 #endif
 
 static void fillbuffer(UBYTE *buffer, UBYTE data, globaldata *g)
@@ -1978,15 +2001,22 @@ static BOOL testread_td2(UBYTE *buffer, globaldata *g)
 
 #if TD64
 	if (g->tdmode == ACCESS_TD64) {
-		UBYTE err;
+		BYTE err;
 		io->iotd_Req.io_Command = TD_READ64;
 		io->iotd_Req.io_Length = 0;
 		io->iotd_Req.io_Data = 0;
 		io->iotd_Req.io_Offset = 0;
 		io->iotd_Req.io_Actual = 0;
 		err = DoIO((struct IORequest*)io);
-		if (err != 0 && err != IOERR_BADLENGTH && err != IOERR_BADADDRESS)
+		if (err != 0 && err != IOERR_BADLENGTH && err != IOERR_BADADDRESS) {
+#if DETECTDEBUG
+			ULONG args[1];
+			args[0] = (LONG)err;
+			g->ErrorMsg = _NormalErrorMsg;
+			(g->ErrorMsg)(ACCESS_DEBUG_TD64_1, args, 1, g);
+#endif
 			return FALSE;
+		}
 	}
 #endif
 
@@ -1996,11 +2026,14 @@ static BOOL testread_td2(UBYTE *buffer, globaldata *g)
 		io->iotd_Req.io_Length  = BLOCKSIZE;
 		io->iotd_Req.io_Data    = buffer;
 		io->iotd_Req.io_Offset  = g->lastblock << BLOCKSHIFT;
+		io->iotd_Req.io_Actual  = 0;
 		if (g->tdmode >= ACCESS_TD64) {
 			io->iotd_Req.io_Actual  = g->lastblock >> (32 - BLOCKSHIFT);
 			io->iotd_Req.io_Command = g->tdmode == ACCESS_NSD ? NSCMD_TD_READ64 : TD_READ64;
 		}
 		if (DoIO((struct IORequest*)io) != 0)
+			return FALSE;
+		if (io->iotd_Req.io_Actual != BLOCKSIZE)
 			return FALSE;
 		if (testbuffer(buffer, cnt, g))
 			return TRUE;
@@ -2130,17 +2163,14 @@ BOOL detectaccessmode(UBYTE *buffer, globaldata *g)
 
 /*************************************************************************/
 
-/* turn drivemotor off */
-void MotorOff(globaldata *g)
+void UpdateAndMotorOff(globaldata *g)
 {
 	struct IOExtTD *request = g->request;
 
-	if(g->removable)
-	{
-		request->iotd_Req.io_Command = TD_MOTOR;
-		request->iotd_Req.io_Length  = 0;
-		request->iotd_Count = g->changecount;
+	request->iotd_Req.io_Command = CMD_UPDATE;
+	DoIO((struct IORequest *)request);
 
-		DoIO((struct IORequest*)request);
-	}
+	request->iotd_Req.io_Command = TD_MOTOR;
+	request->iotd_Req.io_Length  = 0;
+	DoIO((struct IORequest*)request);
 }

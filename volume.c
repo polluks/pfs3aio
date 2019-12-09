@@ -166,6 +166,7 @@
 #include "kswrapper.h"
 
 static VOID CreateInputEvent(BOOL inserted, globaldata *g);
+static BOOL GetCurrentRoot(struct rootblock **rootblock, globaldata *g);
 
 /**********************************************************************/
 /*                               DEBUG                                */
@@ -245,6 +246,8 @@ static UBYTE debugbuf[120];
 static BOOL SameDisk(struct rootblock *, struct rootblock *);
 static BOOL SameDiskDL(struct rootblock *, struct DeviceList *);
 static void TakeOverLocks(struct FileLock *, globaldata *);
+static void DiskInsertSequence(struct rootblock *rootblock, globaldata *g);
+static void DiskRemoveSequence(globaldata *g);
 
 void NewVolume (BOOL FORCE, globaldata *g)
 {
@@ -254,6 +257,9 @@ void NewVolume (BOOL FORCE, globaldata *g)
 	/* check if something changed */
 	changed = UpdateChangeCount (g);
 	if (!FORCE && !changed)
+		return;
+	
+	if (!AttemptLockDosList(LDF_VOLUMES | LDF_WRITE))
 		return;
 
 	ENTER("NewVolume");
@@ -288,7 +294,9 @@ void NewVolume (BOOL FORCE, globaldata *g)
 		g->currentvolume = NULL;    /* @XL */
 	}
 
-	MotorOff (g);
+	UnLockDosList(LDF_VOLUMES | LDF_WRITE);
+
+	UpdateAndMotorOff(g);
 	EXIT("NewVolume");
 }
 
@@ -300,7 +308,7 @@ void NewVolume (BOOL FORCE, globaldata *g)
 ** return waarde = currentdisk back in drive?
 ** used by NewVolume and ACTION_INHIBIT
 */
-void DiskRemoveSequence(globaldata *g)
+static void DiskRemoveSequence(globaldata *g)
 {
   struct volumedata *oldvolume = g->currentvolume;
 
@@ -327,7 +335,6 @@ void DiskRemoveSequence(globaldata *g)
 	** lockentries: link to doslist...
 	** fileentries: link them too...
 	*/
-	Forbid();   /* LockDosList(LDF_VOLUMES|LDF_READ); */
 	if(!IsMinListEmpty(&oldvolume->fileentries))
 	{
 		DB(Trace(1, "DiskRemoveSequence", "there are locks\n"));
@@ -343,7 +350,6 @@ void DiskRemoveSequence(globaldata *g)
 		MinRemove(oldvolume);
 		FreeVolumeResources(oldvolume, g);
 	}
-	Permit();   /* UnLockDosList(LDF_VOLUMES|LDF_READ); */
 
 #ifdef TRACKDISK
 	if(g->trackdisk)
@@ -361,9 +367,22 @@ void DiskRemoveSequence(globaldata *g)
 
 	EXIT("DiskRemoveSequence");
 	return;
-}   
+}
 
-void DiskInsertSequence(struct rootblock *rootblock, globaldata *g)
+BOOL SafeDiskRemoveSequence(globaldata *g)
+{
+	while (g->currentvolume) {    /* inefficiënt.. */
+		if (AttemptLockDosList(LDF_VOLUMES | LDF_WRITE)) {
+			DiskRemoveSequence(g);
+			UnLockDosList(LDF_VOLUMES | LDF_WRITE);
+		} else {
+			return FALSE;
+		}
+	}
+	return TRUE;
+}
+
+static void DiskInsertSequence(struct rootblock *rootblock, globaldata *g)
 {
   struct DosList *doslist;
   struct DosInfo *di;
@@ -377,8 +396,6 @@ void DiskInsertSequence(struct rootblock *rootblock, globaldata *g)
 	/* -I- Search new disk in volumelist */
 
 	BCPLtoCString(diskname, rootblock->diskname);
-//  doslist = LockDosList(LDF_VOLUMES|LDF_READ);
-	Forbid();
 	di = BADDR(((struct RootNode *)DOSBase->dl_Root)->rn_Info);
 	doslist = BADDR(di->di_DevInfo);
 	
@@ -444,8 +461,6 @@ void DiskInsertSequence(struct rootblock *rootblock, globaldata *g)
 			found = FALSE;      // an empty doslistentry is useless to us
 		}
 	}
-//  UnLockDosList(LDF_VOLUMES|LDF_READ);
-	Permit();
 
 	if(!found)
 	{
@@ -509,9 +524,11 @@ void DiskInsertSequence(struct rootblock *rootblock, globaldata *g)
 				if (ddblk->blk.id == DELDIRID)
 				{
 					for (i=0; i<31; i++)
+					{
 						nr = ddblk->blk.entries[i].anodenr;
 						if (nr)
 							FreeAnodesInChain(nr, g);
+					}
 				}
 			}
 			FreeLRU ((struct cachedblock *)ddblk);
@@ -587,6 +604,26 @@ struct volumedata *MakeVolumeData (struct rootblock *rootblock, globaldata *g)
 	volume->numblocks       = g->geom->dg_TotalSectors;
 	volume->bytesperblock   = g->geom->dg_SectorSize;
 	volume->rescluster      = rootblock->reserved_blksize / volume->bytesperblock;
+
+	/* Calculate minimum fake block size that keeps total block count less than 16M.
+	 * Workaround for programs (including WB) that calculate free space using
+	 * "in use * 100 / total" formula that overflows if in use is block count is larger
+	 * than 16M blocks with 512 block size. Used only in ACTION_INFO.
+	 */
+	g->infoblockshift = 0;
+	if (DOSBase->dl_lib.lib_Version < 50) {
+		UWORD blockshift = 0;
+		ULONG bpb = volume->bytesperblock;
+		while (bpb > 512) {
+			blockshift++;
+			bpb >>= 1;
+		}
+		// Calculate smallest safe fake block size, up to max 32k. (512=0,1024=1,..32768=6)
+		while ((volume->numblocks >> blockshift) >= 0x02000000 && g->infoblockshift < 6) {
+			g->infoblockshift++;
+			blockshift++;	
+		}
+	}
 
 	/* load rootblock extension (if it is present) */
 	if (rootblock->extension && (rootblock->options & MODE_EXTENSION))
@@ -929,7 +966,7 @@ static LONG NoErrorMsg(CONST_STRPTR melding, APTR arg, ULONG dummy, globaldata *
 static void UpdateDosEnvec(globaldata *g);
 #endif
 
-BOOL GetCurrentRoot(struct rootblock **rootblock, globaldata *g)
+static BOOL GetCurrentRoot(struct rootblock **rootblock, globaldata *g)
 {
   BOOL changestate;
   ULONG error;
@@ -994,11 +1031,9 @@ BOOL GetCurrentRoot(struct rootblock **rootblock, globaldata *g)
 	g->ErrorMsg = NoErrorMsg;   // prevent readerrormsg
 
 #if ACCESS_DETECT
-	/* detect best access mode, td32, td64, nsd or directscsi */
-	if (g->tdmode == ACCESS_UNDETECTED) {
-		if (!detectaccessmode((UBYTE*)*rootblock, g))
-			goto nrd_error;
-	}
+	/* Detect best access mode, TD32, TD64, NSD or DirectSCSI */
+	if (!detectaccessmode((UBYTE*)*rootblock, g))
+		goto nrd_error;
 #endif
 
 	error = RawRead((UBYTE *)*rootblock, 1, BOOTBLOCK1, g);
@@ -1095,7 +1130,7 @@ void GetDriveGeometry(globaldata *g)
 	}
 #endif
 
-	if (forceDS) {
+	if (forceDS && SuperFloppy) {
 		if (get_scsi_geometry(g))
 			goto gotgeom;
 	}
