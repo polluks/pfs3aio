@@ -233,7 +233,7 @@ void PFSDoNotify (struct fileinfo *object, BOOL checkparent, globaldata *g)
 	struct notifyobject *no = NULL;
 
 #if DELDIR
-	if ((ULONG)object->direntry <= SPECIAL_DELFILE)
+	if ((IPTR)object->direntry <= SPECIAL_DELFILE)
 		return;
 #endif
 
@@ -384,7 +384,7 @@ static void Awake (globaldata *g)
   listentry_t *le;
   struct volumedata *volume = g->currentvolume;
   struct rootblock *rootblock;
-  ULONG error;
+  SIPTR error;
 
 	if (volume)
 	{

@@ -208,17 +208,17 @@ extern BOOL debug;
 
 enum vctype {read, write};
 static int CheckDataCache(ULONG blocknr, globaldata *g);
-static int CachedRead(ULONG blocknr, ULONG *error, BOOL fake, globaldata *g);
-static UBYTE *CachedReadD(ULONG blknr, ULONG *err, globaldata *g);
+static int CachedRead(ULONG blocknr, SIPTR *error, BOOL fake, globaldata *g);
+static UBYTE *CachedReadD(ULONG blknr, SIPTR *err, globaldata *g);
 static int CachedWrite(UBYTE *data, ULONG blocknr, globaldata *g);
 static void ValidateCache(ULONG blocknr, ULONG numblocks, enum vctype, globaldata *g);
 static void UpdateSlot(int slotnr, globaldata *g);
-static ULONG ReadFromRollover(fileentry_t *file, UBYTE *buffer, ULONG size, ULONG *error, globaldata *g);
-static ULONG WriteToRollover(fileentry_t *file, UBYTE *buffer, ULONG size,  ULONG *error, globaldata *g);
-static SFSIZE SeekInRollover(fileentry_t *file, SFSIZE offset, LONG mode, ULONG *error, globaldata *g);
-static SFSIZE ChangeRolloverSize(fileentry_t *file, SFSIZE releof, LONG mode, ULONG *error, globaldata *g);
-static ULONG ReadFromFile(fileentry_t *file, UBYTE *buffer, ULONG size,ULONG *error, globaldata *g);
-static ULONG WriteToFile(fileentry_t *file, UBYTE *buffer, ULONG size,  ULONG *error, globaldata *g);
+static ULONG ReadFromRollover(fileentry_t *file, UBYTE *buffer, ULONG size, SIPTR *error, globaldata *g);
+static ULONG WriteToRollover(fileentry_t *file, UBYTE *buffer, ULONG size, SIPTR *error, globaldata *g);
+static SFSIZE SeekInRollover(fileentry_t *file, SFSIZE offset, LONG mode, SIPTR *error, globaldata *g);
+static SFSIZE ChangeRolloverSize(fileentry_t *file, SFSIZE releof, LONG mode, SIPTR *error, globaldata *g);
+static ULONG ReadFromFile(fileentry_t *file, UBYTE *buffer, ULONG size, SIPTR *error, globaldata *g);
+static ULONG WriteToFile(fileentry_t *file, UBYTE *buffer, ULONG size, SIPTR *error, globaldata *g);
 
 /**********************************************************************/
 /*                            READ & WRITE                            */
@@ -227,7 +227,7 @@ static ULONG WriteToFile(fileentry_t *file, UBYTE *buffer, ULONG size,  ULONG *e
 /**********************************************************************/
 
 ULONG ReadFromObject(fileentry_t *file, UBYTE *buffer, ULONG size,
-	ULONG *error, globaldata *g)
+	SIPTR *error, globaldata *g)
 {
 	if (!CheckReadAccess(file,error,g))
 		return -1;
@@ -252,7 +252,7 @@ ULONG ReadFromObject(fileentry_t *file, UBYTE *buffer, ULONG size,
 }
 
 ULONG WriteToObject(fileentry_t *file, UBYTE *buffer, ULONG size,
-	ULONG *error, globaldata *g)
+	SIPTR *error, globaldata *g)
 {
 	/* check write access */
 	if (!CheckWriteAccess(file, error, g))
@@ -280,7 +280,7 @@ ULONG WriteToObject(fileentry_t *file, UBYTE *buffer, ULONG size,
 		return WriteToFile(file,buffer,size,error,g);
 }
 
-SFSIZE SeekInObject(fileentry_t *file, SFSIZE offset, LONG mode, ULONG *error,
+SFSIZE SeekInObject(fileentry_t *file, SFSIZE offset, LONG mode, SIPTR *error,
 	globaldata *g)
 {
 	/* check access */
@@ -306,7 +306,7 @@ SFSIZE SeekInObject(fileentry_t *file, SFSIZE offset, LONG mode, ULONG *error,
 }
 
 SFSIZE ChangeObjectSize(fileentry_t *file, SFSIZE releof, LONG mode,
-	ULONG *error, globaldata *g)
+	SIPTR *error, globaldata *g)
 {
 	/* check access */
 	if (!CheckChangeAccess(file, error, g))
@@ -346,7 +346,7 @@ SFSIZE ChangeObjectSize(fileentry_t *file, SFSIZE releof, LONG mode,
  * goto start
  */
 static ULONG ReadFromRollover(fileentry_t *file, UBYTE *buffer, ULONG size,
-	ULONG *error, globaldata *g)
+	SIPTR *error, globaldata *g)
 {
 #define direntry_m file->le.info.file.direntry
 #define filesize_m GetDEFileSize(file->le.info.file.direntry, g)
@@ -396,7 +396,7 @@ static ULONG ReadFromRollover(fileentry_t *file, UBYTE *buffer, ULONG size,
  * Max virtualsize = filesize-1
  */
 static ULONG WriteToRollover(fileentry_t *file, UBYTE *buffer, ULONG size,
-	ULONG *error, globaldata *g)
+	SIPTR *error, globaldata *g)
 {
 #define direntry_m file->le.info.file.direntry
 #define filesize_m GetDEFileSize(file->le.info.file.direntry, g)
@@ -463,7 +463,7 @@ static ULONG WriteToRollover(fileentry_t *file, UBYTE *buffer, ULONG size,
 #undef filesize_m
 }
 
-static SFSIZE SeekInRollover(fileentry_t *file, SFSIZE offset, LONG mode, ULONG *error, globaldata *g)
+static SFSIZE SeekInRollover(fileentry_t *file, SFSIZE offset, LONG mode, SIPTR *error, globaldata *g)
 {
 #define filesize_m GetDEFileSize(file->le.info.file.direntry, g)
 #define direntry_m file->le.info.file.direntry
@@ -526,7 +526,7 @@ static SFSIZE SeekInRollover(fileentry_t *file, SFSIZE offset, LONG mode, ULONG 
 
 
 static SFSIZE ChangeRolloverSize(fileentry_t *file, SFSIZE releof, LONG mode,
- 	ULONG *error, globaldata *g)
+	SIPTR *error, globaldata *g)
 {
 #define filesize_m GetDEFileSize(file->le.info.file.direntry, g)
 #define direntry_m file->le.info.file.direntry
@@ -602,7 +602,7 @@ static SFSIZE ChangeRolloverSize(fileentry_t *file, SFSIZE releof, LONG mode,
 ** result: #bytes read; -1 = error; 0 = eof
 */
 static ULONG ReadFromFile(fileentry_t *file, UBYTE *buffer, ULONG size,
-				ULONG *error, globaldata *g)
+				SIPTR *error, globaldata *g)
 {
 	ULONG anodeoffset, blockoffset, blockstoread;
 	ULONG fullblks, bytesleft;
@@ -642,8 +642,8 @@ static ULONG ReadFromFile(fileentry_t *file, UBYTE *buffer, ULONG size,
 	bytesleft = t&BLOCKSIZEMASK;    /* # bytes in last incomplete block */
 
 	/* check mask, both at start and end */
-	t = (((ULONG)(buffer-blockoffset+BLOCKSIZE))&~g->dosenvec->de_Mask) ||
-		(((ULONG)(buffer+size-bytesleft))&~g->dosenvec->de_Mask);
+	t = (((IPTR)(buffer-blockoffset+BLOCKSIZE))&~g->dosenvec->de_Mask) ||
+		(((IPTR)(buffer+size-bytesleft))&~g->dosenvec->de_Mask);
 	t = !t;
 
 	/* read indirect if
@@ -767,7 +767,7 @@ static ULONG ReadFromFile(fileentry_t *file, UBYTE *buffer, ULONG size,
 **   | Deextent filesize (if error)
 */
 static ULONG WriteToFile(fileentry_t *file, UBYTE *buffer, ULONG size,
-			ULONG *error, globaldata *g)
+			SIPTR *error, globaldata *g)
 {
 	ULONG maskok, t;
 	ULONG totalblocks, oldblocksinfile;
@@ -793,7 +793,7 @@ static ULONG WriteToFile(fileentry_t *file, UBYTE *buffer, ULONG size,
 	newfileoffset = file->offset + size;
 
 	/* Check if too large (QUAD) or overflowed (ULONG)? */
-	if (newfileoffset > MAX_FILE_SIZE || newfileoffset < file->offset) {
+	if (newfileoffset > MAX_FILE_SIZE || newfileoffset < file->offset || (LARGE_FILE_SIZE && newfileoffset > MAXFILESIZE32 && !g->largefile)) {
 		*error = ERROR_DISK_FULL;
 		return -1;
 	}
@@ -817,8 +817,8 @@ static ULONG WriteToFile(fileentry_t *file, UBYTE *buffer, ULONG size,
 	CorrectAnodeAC(&chnode,&anodeoffset,g);
 
 	/* check mask */
-	maskok = (((ULONG)(buffer-blockoffset+BLOCKSIZE))&~g->dosenvec->de_Mask) ||
-			 (((ULONG)(buffer-blockoffset+(totalblocks<<BLOCKSHIFT)))&~g->dosenvec->de_Mask);
+	maskok = (((IPTR)(buffer-blockoffset+BLOCKSIZE))&~g->dosenvec->de_Mask) ||
+			 (((IPTR)(buffer-blockoffset+(totalblocks<<BLOCKSHIFT)))&~g->dosenvec->de_Mask);
 	maskok = !maskok;
 
 	/* write indirect if
@@ -1007,7 +1007,7 @@ wtf_error:
 **
 ** - the end of the file is 0 from end
 */
-SFSIZE SeekInFile(fileentry_t *file, SFSIZE offset, LONG mode, ULONG *error, globaldata *g)
+SFSIZE SeekInFile(fileentry_t *file, SFSIZE offset, LONG mode, SIPTR *error, globaldata *g)
 {
 	SFSIZE oldoffset, newoffset;
 	ULONG anodeoffset, blockoffset;
@@ -1083,7 +1083,7 @@ SFSIZE SeekInFile(fileentry_t *file, SFSIZE offset, LONG mode, ULONG *error, glo
 ** change other locks
 ** change direntry
 */
-SFSIZE ChangeFileSize(fileentry_t *file, SFSIZE releof, LONG mode, ULONG *error,
+SFSIZE ChangeFileSize(fileentry_t *file, SFSIZE releof, LONG mode, SIPTR *error,
 	globaldata *g)
 {
 	listentry_t *fe;
@@ -1124,7 +1124,7 @@ SFSIZE ChangeFileSize(fileentry_t *file, SFSIZE releof, LONG mode, ULONG *error,
 	}
 
 	/* < 0 check still needed because QUAD is signed */
-	if (abseof < 0 || abseof > MAX_FILE_SIZE)
+	if (abseof < 0 || abseof > MAX_FILE_SIZE || (LARGE_FILE_SIZE && abseof > MAXFILESIZE32 && !g->largefile))
 	{
 		*error = ERROR_SEEK_ERROR;
 		return -1;
@@ -1193,6 +1193,33 @@ SFSIZE ChangeFileSize(fileentry_t *file, SFSIZE releof, LONG mode, ULONG *error,
 /*                           CACHE STUFF                              */
 /**********************************************************************/
 
+void FreeDataCache(globaldata *g)
+{
+	FreeVec(g->dc.ref);
+	FreeVec(g->dc.data);
+	g->dc.ref = NULL;
+	g->dc.data = NULL;
+}
+
+BOOL InitDataCache(globaldata *g)
+{
+	FreeDataCache(g);
+	/* data cache */
+	g->dc.size = DATACACHELEN;
+	g->dc.mask = DATACACHEMASK;
+	g->dc.roving = 0;
+	g->dc.ref = AllocMemR(DATACACHELEN * sizeof(struct reftable), MEMF_CLEAR, g);
+	g->dc.data = AllocMemR(DATACACHELEN * BLOCKSIZE, g->dosenvec->de_BufMemType, g);
+	if (!g->dc.ref || !g->dc.data)
+		return FALSE;
+
+	/* check memory against mask */
+	if (((IPTR)g->dc.data) & ~g->dosenvec->de_Mask)
+		ErrorMsg(AFS_WARNING_MEMORY_MASK, NULL, g);
+		
+	return TRUE;
+}
+
 /* check datacache. return cache slotnr or -1
  * if not found
  */
@@ -1213,7 +1240,7 @@ static int CheckDataCache(ULONG blocknr, globaldata *g)
  * there already. return cache slotnr. errors are indicated by 'error'
  * (null = ok)
  */
-static int CachedRead(ULONG blocknr, ULONG *error, BOOL fake, globaldata *g)
+static int CachedRead(ULONG blocknr, SIPTR *error, BOOL fake, globaldata *g)
 {
 	int i;
 
@@ -1234,7 +1261,7 @@ static int CachedRead(ULONG blocknr, ULONG *error, BOOL fake, globaldata *g)
 	return i;
 }
 
-static UBYTE *CachedReadD(ULONG blknr, ULONG *err, globaldata *g)
+static UBYTE *CachedReadD(ULONG blknr, SIPTR *err, globaldata *g)
 { 
 	int i;
 
@@ -1356,7 +1383,7 @@ static void ValidateCache(ULONG blocknr, ULONG numblocks, enum vctype vctype, gl
 */
 ULONG DiskRead(UBYTE *buffer, ULONG blockstoread, ULONG blocknr, globaldata *g)
 {
-	ULONG error;
+	SIPTR error;
 	int slotnr;
 
 	DB(Trace(1, "DiskRead", "%ld blocks from %ld firstblock %ld\n",
@@ -1537,14 +1564,20 @@ retry:
 	/* chop in maxtransfer chunks */
 	maxtransfer = min(g->maxtransfermax, g->dosenvec->de_MaxTransfer) >> BLOCKSHIFT;
 	maxtransfer = min(65535, maxtransfer); // SCSI READ/WRITE(10) max transfer
+	maxtransfer &= ~7;
+	if (!maxtransfer) {
+		return ERROR_BAD_NUMBER;
+	}
+	blocks <<= g->blocklogshift;
+	blocknr <<= g->blocklogshift;
 	while (blocks > 0)
 	{
-		transfer = min(blocks,maxtransfer);
+		transfer = min(blocks, maxtransfer);
 		*((UWORD *)&cmdbuf[0]) = write ? 0x2a00 : 0x2800;
 		*((ULONG *)&cmdbuf[2]) = blocknr;
 		*((ULONG *)&cmdbuf[6]) = transfer << 8;
 		PROFILE_OFF();
-		if (!DoSCSICommand(buffer, transfer << BLOCKSHIFT, 0, cmdbuf, 10, write ? SCSIF_WRITE : SCSIF_READ, g))
+		if (!DoSCSICommand(buffer, transfer << BLOCKNATIVESHIFT, 0, cmdbuf, 10, write ? SCSIF_WRITE : SCSIF_READ, g))
 		{
 			PROFILE_ON();
 			if (ErrorRequest(write, g->scsicmd.scsi_Status, blocknr, transfer, g))
@@ -1552,7 +1585,7 @@ retry:
 			return ERROR_NOT_A_DOS_DISK;
 		}
 		PROFILE_ON();
-		buffer += transfer << BLOCKSHIFT;
+		buffer += transfer << BLOCKNATIVESHIFT;
 		blocks -= transfer;
 		blocknr += transfer;
 	}
@@ -1604,6 +1637,9 @@ retry:
 	{
 		io_transfer = min(io_length, min(g->maxtransfermax, g->dosenvec->de_MaxTransfer));
 		io_transfer &= ~BLOCKSIZEMASK;
+		if (!io_transfer) {
+			return ERROR_BAD_NUMBER;
+		}
 		request = g->request;
 		request->iotd_Req.io_Command = write ? CMD_WRITE : CMD_READ;
 		request->iotd_Req.io_Length  = io_transfer;
@@ -1705,7 +1741,7 @@ ULONG RawWrite(UBYTE *buffer, ULONG blocks, ULONG blocknr, globaldata *g)
 #if ACCESS_DETECT
 
 #if DETECTDEBUG
-static CONST UBYTE ACCESS_DEBUG1[] = "%s:%ld\nfirstblock=%ld\nlastblock=%ld\nblockshift=%ld\nblocksize=%ld\ninside4G=%ld";
+static CONST UBYTE ACCESS_DEBUG1[] = "%s:%ld\nfirstblock=%ld\nlastblock=%ld\nblockshift=%ld/%ld\nblocksize=%ld/%ld\ninside4G=%ld";
 static CONST UBYTE ACCESS_DEBUG2[] = "Test %ld = %ld";
 static CONST UBYTE ACCESS_DEBUG3[] = "SCSI Read Capacity = %ld, Lastblock = %ld";
 static CONST UBYTE ACCESS_DEBUG_TD64_1[] = "TD64 empty access check: %ld";
@@ -1919,12 +1955,12 @@ static BOOL testread_ds2(UBYTE *buffer, globaldata *g)
 #if DETECTDEBUG
 		ULONG args[2];
 		args[0] = capacity;
-		args[1] = g->lastblock;
+		args[1] = g->lastblocknative + (1 << g->blocklogshift);
 		g->ErrorMsg = _NormalErrorMsg;
 		(g->ErrorMsg)(ACCESS_DEBUG3, args, 1, g);
 #endif
 
-		if (g->lastblock > capacity) {
+		if (g->lastblocknative + (1 << g->blocklogshift) - 1 > capacity) {
 #if DETECTDEBUG
 			DebugPutStr("DoSCSICommand capacity smaller than last block\n");
 #endif
@@ -1933,9 +1969,9 @@ static BOOL testread_ds2(UBYTE *buffer, globaldata *g)
 		fillbuffer(buffer, cnt, g);
 		/* Read(10) */
 		*((UWORD *)&cmdbuf[0]) = 0x2800;
-		*((ULONG *)&cmdbuf[2]) = g->lastblock;
-		*((ULONG *)&cmdbuf[6]) = 1 << 8;
-		if (!DoSCSICommand(buffer, 1 << BLOCKSHIFT, 1 << BLOCKSHIFT, cmdbuf, 10, SCSIF_READ, g)) {
+		*((ULONG *)&cmdbuf[2]) = g->lastblocknative;
+		*((ULONG *)&cmdbuf[6]) = 1 << (8 + g->blocklogshift);
+		if (!DoSCSICommand(buffer, BLOCKSIZE, BLOCKSIZE, cmdbuf, 10, SCSIF_READ, g)) {
 #if DETECTDEBUG
 			DebugPutStr("DoSCSICommand Read(10) failed\n");
 #endif
@@ -2025,10 +2061,10 @@ static BOOL testread_td2(UBYTE *buffer, globaldata *g)
 		io->iotd_Req.io_Command = CMD_READ;
 		io->iotd_Req.io_Length  = BLOCKSIZE;
 		io->iotd_Req.io_Data    = buffer;
-		io->iotd_Req.io_Offset  = g->lastblock << BLOCKSHIFT;
+		io->iotd_Req.io_Offset  = g->lastblocknative << BLOCKNATIVESHIFT;
 		io->iotd_Req.io_Actual  = 0;
 		if (g->tdmode >= ACCESS_TD64) {
-			io->iotd_Req.io_Actual  = g->lastblock >> (32 - BLOCKSHIFT);
+			io->iotd_Req.io_Actual  = g->lastblocknative >> (32 - BLOCKNATIVESHIFT);
 			io->iotd_Req.io_Command = g->tdmode == ACCESS_NSD ? NSCMD_TD_READ64 : TD_READ64;
 		}
 		if (DoIO((struct IORequest*)io) != 0)
@@ -2067,7 +2103,7 @@ static BOOL testread_td(UBYTE *buffer, globaldata *g)
 BOOL detectaccessmode(UBYTE *buffer, globaldata *g)
 {
 	UBYTE name[FNSIZE];
-	BOOL inside4G = g->lastblock < (0x80000000ul >> (BLOCKSHIFT - 1));
+	BOOL inside4G = g->lastblocknative < (0x80000000ul >> (BLOCKNATIVESHIFT - 1));
 	ULONG *env = (ULONG *)g->dosenvec;
 	BOOL disableNSD = (env[DE_INTERLEAVE] & DEF_DISABLENSD) != 0;
 	BOOL forceDS = (env[DE_INTERLEAVE] & DEF_SCSIDIRECT) != 0;
@@ -2075,19 +2111,21 @@ BOOL detectaccessmode(UBYTE *buffer, globaldata *g)
 	BCPLtoCString(name, (UBYTE *)BADDR(g->startup->fssm_Device));
 
 #if DETECTDEBUG
-	ULONG args[8];
+	ULONG args[10];
 	args[0] = (ULONG)name;
 	args[1] = g->startup->fssm_Unit;
-	args[2] = g->firstblock;
-	args[3] = g->lastblock;
-	args[4] = BLOCKSHIFT;
-	args[5] = BLOCKSIZE;
-	args[6] = inside4G;
+	args[2] = g->firstblocknative;
+	args[3] = g->lastblocknative;
+	args[4] = BLOCKNATIVESHIFT;
+	args[5] = BLOCKSHIFT;
+	args[6] = BLOCKNATIVESIZE;
+	args[7] = BLOCKSIZE;
+	args[8] = inside4G;
 	g->ErrorMsg = _NormalErrorMsg;
 	(g->ErrorMsg)(ACCESS_DEBUG1, args, 1, g);
 
-	DebugPutHex("firstblock", g->firstblock);
-	DebugPutHex("lastblock", g->lastblock);
+	DebugPutHex("firstblock", g->firstblocknative);
+	DebugPutHex("lastblock", g->lastblocknative);
 	DebugPutHex("inside4G", inside4G);
 	DebugPutHex("maxtransfer", g->maxtransfermax);
 #endif
@@ -2110,7 +2148,6 @@ BOOL detectaccessmode(UBYTE *buffer, globaldata *g)
 	}
 
 	if (inside4G) {
-		ULONG args[3];
 		/* inside first 4G? Try standard CMD_READ first. */
 		g->tdmode = ACCESS_STD;
 		if (testread_td(buffer, g))
@@ -2121,14 +2158,6 @@ BOOL detectaccessmode(UBYTE *buffer, globaldata *g)
 		if (testread_ds(buffer, g))
 			return TRUE;
 #endif
-		g->tdmode = ACCESS_STD;
-		/* Both failed. Panic! */
-		args[0] = g->lastblock;
-		args[1] = (ULONG)name;
-		args[2] = g->startup->fssm_Unit;
-		g->ErrorMsg = _NormalErrorMsg;
-		(g->ErrorMsg)(AFS_ERROR_32BIT_ACCESS_ERROR, args, 1, g);
-		return FALSE;
 	}
 	/* outside of first 4G, must use TD64, NSD or DS */
 #if NSD
@@ -2155,6 +2184,16 @@ BOOL detectaccessmode(UBYTE *buffer, globaldata *g)
 	g->ErrorMsg = _NormalErrorMsg;
 	(g->ErrorMsg)(ACCESS_DEBUG2, args, 1, g);
 #endif
+
+	if (inside4G) {
+		ULONG args[3];
+		/* Both failed. Panic! */
+		args[0] = g->lastblocknative;
+		args[1] = (ULONG)name;
+		args[2] = g->startup->fssm_Unit;
+		g->ErrorMsg = _NormalErrorMsg;
+		(g->ErrorMsg)(AFS_ERROR_32BIT_ACCESS_ERROR, args, 1, g);
+	}
 
 	g->tdmode = ACCESS_STD;
 	return FALSE;

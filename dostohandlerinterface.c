@@ -110,7 +110,7 @@ void SleepCommands (struct DosPacket *action, globaldata *g);
 
 struct functable
 {
-	LONG (*function)(struct DosPacket *, globaldata *);
+	SIPTR (*function)(struct DosPacket *, globaldata *);
 	ULONG timeout;
 };
 
@@ -122,7 +122,7 @@ static const struct functable functiontable0[] =
 	{NotKnown, 0},
 	{NotKnown, 0},            /* ACTION_SET_MAP 4 */
 	{dd_Quit, 0},             /* ACTION_DIE 5 */
-	{NotKnown, 0},                /* ACTION_EVENT 6 */
+	{NotKnown, 0},            /* ACTION_EVENT 6 */
 	{dd_CurrentVolume, 0},    /* ACTION_CURRENT_VOLUME 7 */
 	{dd_Lock, 1},             /* ACTION_LOCATE_OBJECT 8 */
 	{dd_Relabel, 1},          /* ACTION_RENAME_DISK 9 */
@@ -196,7 +196,7 @@ static const struct functable functiontable1000[] =
 	{NotKnown, 0},
 	{dd_ExamineAll, 1},       /* ACTION_EXAMINE_ALL 1033 */
 	{dd_Examine, 1},          /* ACTION_EXAMINE_FH 1034 */
-	{NotYetImplemented, 0},   /* ACTION_EXAMINE_ALL_END 1035 */
+	{dd_ExamineAllEnd, 1},    /* ACTION_EXAMINE_ALL_END 1035 */
 	{dd_SetProperty, 1},      /* ACTION_SET_OWNER 1036 */
 };
 
@@ -276,6 +276,7 @@ void NormalCommands(struct DosPacket *action, globaldata *g)
 			action->dp_Res1 = dd_Sleep(action, g);
 			break;
 
+#if ROLLOVER
 		case ACTION_CREATE_ROLLOVER:
 			action->dp_Res1 = dd_MakeRollover(action, g);
 			g->timeout |= 1;
@@ -285,6 +286,7 @@ void NormalCommands(struct DosPacket *action, globaldata *g)
 			action->dp_Res1 = dd_SetRollover(action, g);
 			g->timeout |= 1;
 			break;
+#endif
 
 		case ACTION_IS_PFS2:
 			action->dp_Res1 = dd_IsPFS2(action, g);
@@ -302,6 +304,12 @@ void NormalCommands(struct DosPacket *action, globaldata *g)
 		case ACTION_SET_FNSIZE:
 			action->dp_Res1 = dd_SetFileSize(action, g);
 			break;
+
+#if LARGE_FILE_SIZE
+		case ACTION_SET_LARGEFILE:
+			action->dp_Res1 = dd_SetLargeFile(action, g);
+			break;
+#endif
 
 #if EXTENDED_PACKETS_OS4
 		case ACTION_CHANGE_FILE_POSITION64:
@@ -409,6 +417,7 @@ void InhibitedCommands(struct DosPacket *action, globaldata *g)
 			break;
 
 		case ACTION_SET_FNSIZE:
+		case ACTION_SET_LARGEFILE:
 		case ACTION_FINDINPUT:      // Open(.., MODE_OLDFILE)
 		case ACTION_FINDOUTPUT:     // Open(.., MODE_NEWFILE)
 		case ACTION_FINDUPDATE:     // Open(.., MODE_READWRITE)
